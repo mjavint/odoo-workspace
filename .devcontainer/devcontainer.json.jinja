@@ -1,0 +1,87 @@
+{
+  "name": "{{ project_name }}",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "odoo",
+  "workspaceFolder": "/workspace",
+  "remoteUser": "odoo",
+  "postCreateCommand": "./install.sh"
+  "features": {
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}
+  },
+  "mounts": [
+    {
+      "source": "zshhistory",
+      "target": "/commandhistory",
+      "type": "volume"
+    },
+    {
+      "source": "${localEnv:HOME}/.ssh",
+      "target": "/home/odoo/.ssh",
+      "type": "bind"
+    },
+    {
+      "source": "${localEnv:HOME}/.config/opencode",
+      "target": "/home/odoo/.config/opencode",
+      "type": "bind"
+    }
+  ],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.debugpy",
+        "mvintg.odoo-file",
+        "mvintg.owl-lsp",
+        "trinhanhngoc.vscode-odoo",
+        "odoo.owl-vision",
+        "esbenp.prettier-vscode",
+        "charliermarsh.ruff",
+        "DotJoshJohnson.xml",
+        "codezombiech.gitignore",
+        "usernamehw.errorlens",
+        "formulahendry.auto-complete-tag",
+        "mrorz.language-gettext",
+        "ArthurLobo.easy-codesnap",
+        "mvintg.pg-manager"
+      ],
+      "settings": {
+        "python.languageServer": "None",
+        "editor.tabSize": 4,
+        "terminal.integrated.cursorStyle": "underline",
+        "terminal.integrated.cursorBlinking": true,
+        "terminal.integrated.fontFamily": "MesloLGS NF",
+        "terminal.integrated.fontLigatures.enabled": true,
+        "terminal.integrated.defaultProfile.linux": "zsh",
+        "python.defaultInterpreterPath": ".venv/bin/python",
+        "python.terminal.activateEnvInCurrentTerminal": true,
+        "python.linting.pylintEnabled": true,
+        "[python]": {
+          "editor.formatOnSave": true,
+          "editor.codeActionsOnSave": {
+            "source.fixAll": "explicit",
+            "source.organizeImports": "explicit"
+          },
+          "editor.defaultFormatter": "charliermarsh.ruff"
+        },
+        "python.linting.ignorePatterns": ["/workspace/odoo/**/*.py"],
+        "python.linting.pylintArgs": [
+          "--init-hook=\"import sys;sys.path.append('/workspace/odoo')\"",
+          "--load-plugins=pylint_odoo"
+        ],
+        "[json]": {
+          "editor.defaultFormatter": "esbenp.prettier-vscode"
+        },
+        "[jsonc]": {
+          "editor.defaultFormatter": "esbenp.prettier-vscode"
+        },
+        "[xml]": {
+          "editor.defaultFormatter": "mvintg.odoo-file"
+        },
+        "odooShortcuts.formatter.splitAttributes": true,
+        "odooShortcuts.formatter.maxLineLength": 88,
+        "odooShortcuts.formatter.odooSpacingTags": ["record", "menuitem"],
+        "odooShortcuts.formatter.excludePatterns": ["**/odoo/**", "**/enterprise/**"]
+      }
+    }
+  }
+}

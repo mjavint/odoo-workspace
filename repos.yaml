@@ -1,0 +1,19 @@
+./addons/devtoolschool.17.0:
+  defaults:
+    depth: 1
+  remotes:
+    devtoolschool: git@github.com:mjavint/devtoolschool.git
+  target: devtoolschool 17.0
+  merges:
+    - devtoolschool 17.0
+    # - devtoolschool refs/pull/2/head
+
+# ./OCA/helpdesk:
+#   # defaults:
+#   #   depth: 100
+#   remotes:
+#     oca: https://github.com/OCA/helpdesk.git
+#   target: oca 18.0
+#   merges:
+#     - oca 18.0
+#     - oca refs/pull/676/head

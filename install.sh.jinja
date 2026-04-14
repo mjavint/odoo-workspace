@@ -1,0 +1,95 @@
+#!/bin/bash
+set -euo pipefail
+
+# Constants
+readonly ODOO_VERSION="{{ odoo_version }}"
+readonly REQUIREMENTS_URL="https://raw.githubusercontent.com/odoo/odoo/$ODOO_VERSION/requirements.txt"
+readonly REQUIREMENTS_FILE="requirements.txt"
+readonly VENV_DIR=".venv"
+readonly ODOO_DIR="odoo"
+readonly USER="$(whoami)"
+
+# Logging functions
+log_info() { echo "ℹ️  $*"; }
+log_success() { echo "✅ $*"; }
+log_error() { echo "❌ $*" >&2; }
+
+# Update gevent/greenlet versions in requirements
+update_requirements() {
+    local version="$1"
+    case "$version" in
+        16.0|17.0|18.0)
+            log_info "Updating gevent and greenlet versions for Odoo $version..."
+            sed -i.bak -E \
+                -e "s/(gevent==)21\.8\.0/\122.10.2/" \
+                -e "s/(greenlet==)1\.1\.2/\12.0.2/" \
+                "$REQUIREMENTS_FILE" && rm -f "${REQUIREMENTS_FILE}.bak"
+            ;;
+        19.0)
+            log_info "Using official requirements for Odoo $version..."
+            curl -fsSL -o "$REQUIREMENTS_FILE" "$REQUIREMENTS_URL" || { log_error "Failed to download requirements"; return 1; }
+            ;;
+    esac
+}
+
+# Setup virtual environment
+setup_venv() {
+    if [ -d "$VENV_DIR" ]; then
+        log_info "Virtual environment already exists"
+        return 0
+    fi
+
+    log_info "Creating virtual environment..."
+    uv sync || { log_error "Failed to create venv"; return 1; }
+    log_success "Virtual environment created"
+
+    # shellcheck disable=SC1091
+    source "$VENV_DIR/bin/activate" || { log_error "Failed to activate venv"; return 1; }
+    log_success "Virtual environment activated"
+
+    log_info "Downloading requirements..."
+    curl -fsSL -o "$REQUIREMENTS_FILE" "$REQUIREMENTS_URL" || { log_error "Failed to download requirements"; return 1; }
+
+    update_requirements "$ODOO_VERSION"
+
+    log_info "Installing Python dependencies..."
+    uv pip install --no-cache-dir -r "$REQUIREMENTS_FILE" || { log_error "Failed to install dependencies"; return 1; }
+
+    log_success "All dependencies installed"
+    rm -f "$REQUIREMENTS_FILE"
+    log_info "Cleaned up temporary requirements file"
+}
+
+# Download Odoo server
+download_odoo() {
+    if [ -d "$ODOO_DIR" ]; then
+        log_info "Odoo server already exists, skipping download"
+        return 0
+    fi
+
+    log_info "Downloading Odoo server from GitHub..."
+    git clone --depth 1 --branch "$ODOO_VERSION" "https://github.com/odoo/odoo.git" "$ODOO_DIR" \
+        || { log_error "Failed to clone Odoo repository"; return 1; }
+
+    log_success "Odoo server downloaded"
+}
+
+set_permissions() {
+    log_info "Setting permissions for .ssh directory..."
+    sudo chown -R "$USER":"$USER" ~/.ssh
+    sudo chmod -R 700 ~/.ssh
+    log_success "Permissions set for .ssh directory"
+
+}
+
+# Main execution
+main() {
+    log_info "Starting Odoo dependencies setup with uv..."
+
+    setup_venv || exit 1
+    download_odoo || exit 1
+
+    log_success "Environment ready! 🎉"
+}
+
+main "$@"

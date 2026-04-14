@@ -1,0 +1,43 @@
+# Copier template configuration for Odoo DevContainer
+
+_templates_suffix: .jinja
+
+# Project name
+project_name:
+  type: str
+  help: Project name (will be used for container name)
+  default: odoo-project
+
+# Odoo version
+odoo_version:
+  type: str
+  help: Odoo version to use
+  default: "19.0"
+  choices:
+    - "19.0"
+    - "18.0"
+    - "17.0"
+    - "16.0"
+    - "15.0"
+    - "14.0"
+    - "13.0"
+
+# Python version
+python_version:
+  type: str
+  help: Python version to use
+  default: "3.12"
+  choices:
+    - "3.12"
+    - "3.10"
+    - "3.8"
+
+# Exclusions
+_exclude:
+  - "copier.yml"
+  - "copier.yaml"
+  - ".git"
+  - ".gitignore"
+  - "__pycache__"
+  - "*.pyc"
+  - ".DS_Store"

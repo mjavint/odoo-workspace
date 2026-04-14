@@ -1,0 +1,24 @@
+services:
+  odoo:
+    container_name: {{ project_name }}
+    image: ghcr.io/mjavint/odoodev:{{ python_version }}-slim-bookworm
+    volumes:
+      - ..:/workspace
+      - $ODOO_SERVER:/workspace/odoo
+      - odoo-data:/var/lib/odoo
+    command: sleep infinity
+    ports:
+      - "8069:8069"
+      - "8071:8071"
+      - "8072:8072"
+    networks:
+      - shared-net
+
+volumes:
+  odoo-data:
+    external: true
+
+networks:
+  shared-net:
+    external: true
+    name: shared-net
