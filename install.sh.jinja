@@ -23,6 +23,7 @@ update_requirements() {
             sed -i.bak -E \
                 -e "s/(gevent==)21\.8\.0/\122.10.2/" \
                 -e "s/(greenlet==)1\.1\.2/\12.0.2/" \
+                -e "s/(cbor2==)5\.4\.2\.post1/\15.6.5/" \
                 "$REQUIREMENTS_FILE" && rm -f "${REQUIREMENTS_FILE}.bak"
             ;;
         19.0)
@@ -77,7 +78,7 @@ download_odoo() {
 set_permissions() {
     log_info "Setting permissions for .ssh directory..."
     sudo chown -R "$USER":"$USER" ~/.ssh
-    sudo chmod -R 700 ~/.ssh
+    sudo chmod -R 775 ~/.ssh
     log_success "Permissions set for .ssh directory"
 
 }
