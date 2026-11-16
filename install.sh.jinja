@@ -13,17 +13,18 @@ set -euo pipefail
 readonly ODOO_VERSION="{{ odoo_version }}"
 readonly REQUIREMENTS_URL="https://raw.githubusercontent.com/odoo/odoo/${ODOO_VERSION}/requirements.txt"
 readonly REQUIREMENTS_FILE="requirements.txt"
-readonly VENV_DIR=".venv"
 readonly ODOO_DIR="odoo"
+readonly ODOO_REPO="https://github.com/odoo/odoo.git"
 
-# Workspace: /workspace si existe, si no el cwd actual
 if [[ -d "/workspace" ]]; then
     readonly WORKSPACE_DIR="/workspace"
 else
     readonly WORKSPACE_DIR="$(pwd)"
 fi
-readonly OCLI_WORKSPACE="${WORKSPACE_DIR}/ocli"   # binario canónico
-readonly OCLI_INSTALL_DIR="${HOME}/.local/bin"     # destino de instalación
+
+readonly VENV_DIR="${WORKSPACE_DIR}/.venv"          # siempre .venv
+readonly OCLI_WORKSPACE="${WORKSPACE_DIR}/ocli"
+readonly OCLI_INSTALL_DIR="${HOME}/.local/bin"
 readonly OCLI_BIN="${OCLI_INSTALL_DIR}/ocli"
 
 readonly OCLI_REPO="mjavint/ocli"
@@ -33,14 +34,28 @@ readonly OCLI_ASSET_BASE="https://github.com/${OCLI_REPO}/releases/latest/downlo
 readonly CURRENT_USER="$(whoami)"
 
 # ----------------------------------------------------------------------------
-# Logging con emojis
+# Logging con emojis por tipo de tarea
 # ----------------------------------------------------------------------------
-log_info()    { echo "ℹ️  $*"; }
-log_success() { echo "✅ $*"; }
-log_warn()    { echo "⚠️  $*"; }
-log_error()   { echo "❌ $*" >&2; }
-log_step()    { echo "▶️  $*"; }
-log_finish()  { echo "🎉 $*"; }
+log_start()    { echo "🎬 $*"; }
+log_info()     { echo "ℹ️  $*"; }
+log_success()  { echo "✅ $*"; }
+log_warn()     { echo "⚠️  $*"; }
+log_error()    { echo "❌ $*" >&2; }
+log_step()     { echo "▶️  $*"; }
+log_check()    { echo "🔍 $*"; }
+log_python()   { echo "🐍 $*"; }
+log_install()  { echo "📦 $*"; }
+log_download() { echo "📥 $*"; }
+log_config()   { echo "🔧 $*"; }
+log_update()   { echo "🔄 $*"; }
+log_reuse()    { echo "♻️  $*"; }
+log_cleanup()  { echo "🧹 $*"; }
+log_net()      { echo "🌐 $*"; }
+log_version()  { echo "📡 $*"; }
+log_target()   { echo "🎯 $*"; }
+log_clean()    { echo "✨ $*"; }
+log_launch()   { echo "🚀 $*"; }
+log_finish()   { echo "🎉 $*"; }
 
 trap 'log_error "Fallo en la línea ${LINENO}"; exit 1' ERR
 
@@ -62,12 +77,66 @@ get_bin_version() {
 }
 
 get_latest_ocli_version() {
-    # Sigue el redirect /releases/latest → /releases/tag/<tag>
     local location
     location="$(curl -fsSI -o /dev/null -w '%{redirect_url}' \
         "$OCLI_LATEST_URL" 2>/dev/null || true)"
     [[ -n "$location" ]] || return 1
     echo "$location" | sed -nE 's#.*/tag/([^/]+)/?$#\1#p'
+}
+
+# ----------------------------------------------------------------------------
+# Nombre del proyecto desde pyproject.toml (sanitizado)
+# ----------------------------------------------------------------------------
+get_project_name() {
+    local name=""
+    if [[ -f "pyproject.toml" ]]; then
+        name="$(grep -E '^[[:space:]]*name[[:space:]]*=' pyproject.toml 2>/dev/null \
+            | head -1 \
+            | sed -E 's/^[^=]*=[[:space:]]*"([^"]+)".*/\1/')"
+    fi
+    [[ -z "$name" ]] && name="odoo-project"
+
+    name="$(echo "$name" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9.-' '-' \
+        | sed -E 's/^-+//; s/-+$//')"
+
+    echo "$name"
+}
+
+# ----------------------------------------------------------------------------
+# Ajuste del prompt en pyvenv.cfg
+# ----------------------------------------------------------------------------
+set_venv_prompt() {
+    local venv_dir="$1" prompt_name="$2"
+    local cfg="${venv_dir}/pyvenv.cfg"
+
+    if [[ ! -f "$cfg" ]]; then
+        log_warn "No existe ${cfg} → no se puede ajustar el prompt"
+        return 1
+    fi
+
+    # Leer prompt actual (si existe)
+    local current
+    current="$(grep -E '^prompt[[:space:]]*=' "$cfg" 2>/dev/null \
+        | head -1 \
+        | sed -E 's/^prompt[[:space:]]*=[[:space:]]*//' \
+        | sed -E 's/[[:space:]]+$//')"
+
+    if [[ "$current" == "$prompt_name" ]]; then
+        log_info "Prompt del venv ya configurado: (${prompt_name})"
+        return 0
+    fi
+
+    # Borrar cualquier 'prompt = ...' existente
+    sed -i.bak -E '/^prompt[[:space:]]*=/d' "$cfg" && rm -f "${cfg}.bak"
+
+    # Añadir el nuevo
+    printf 'prompt = %s\n' "$prompt_name" >> "$cfg"
+
+    if [[ -n "$current" ]]; then
+        log_clean "Prompt del venv actualizado: (${current}) → (${prompt_name})"
+    else
+        log_clean "Prompt del venv añadido: (${prompt_name})"
+    fi
 }
 
 # ----------------------------------------------------------------------------
@@ -77,7 +146,7 @@ update_requirements() {
     local version="$1"
     case "$version" in
         16.0|17.0|18.0)
-            log_step "Ajustando gevent/greenlet/cbor2 para Odoo ${version}..."
+            log_config "Ajustando gevent/greenlet/cbor2 para Odoo ${version}..."
             sed -i.bak -E \
                 -e "s/(gevent==)21\.8\.0/\122.10.2/" \
                 -e "s/(greenlet==)1\.1\.2/\12.0.2/" \
@@ -92,55 +161,124 @@ update_requirements() {
 }
 
 # ----------------------------------------------------------------------------
-# Entorno virtual con uv
+# Entorno virtual — .venv con prompt = nombre del proyecto
 # ----------------------------------------------------------------------------
 setup_venv() {
     log_step "Configurando entorno virtual..."
 
+    local project_name
+    project_name="$(get_project_name)"
+
+    log_target "Nombre del proyecto : ${project_name}"
+    log_target "Venv destino        : ${VENV_DIR}"
+    log_target "Prompt mostrado     : (${project_name})"
+
+    # ── Si ya existe → no reinstalar, solo asegurar el prompt ────────────
     if [[ -d "$VENV_DIR" ]]; then
-        log_info "El venv ya existe en ${VENV_DIR}, se reutiliza"
+        set_venv_prompt "$VENV_DIR" "$project_name"
+        log_reuse "Venv existente en ${VENV_DIR} → no se reinstala"
         return 0
     fi
 
-    log_info "Creando venv en ${VENV_DIR}..."
-    uv venv "$VENV_DIR" || { log_error "No se pudo crear el venv"; return 1; }
-    log_success "Venv creado"
+    # ── Crear ────────────────────────────────────────────────────────────
+    if [[ -f "pyproject.toml" ]]; then
+        log_python "Ejecutando 'uv sync' (crea ${VENV_DIR} desde pyproject.toml)..."
+        UV_PROJECT_ENVIRONMENT="$VENV_DIR" uv sync --inexact \
+            || { log_error "Falló uv sync"; return 1; }
+    else
+        log_warn "No hay pyproject.toml → usando 'uv venv' como fallback"
+        uv venv "$VENV_DIR" --prompt "$project_name" \
+            || { log_error "Falló uv venv"; return 1; }
+    fi
+    log_success "Venv creado en ${VENV_DIR}"
 
+    # Refuerzo: garantizar el prompt en pyvenv.cfg (uv sync no siempre lo respeta)
+    set_venv_prompt "$VENV_DIR" "$project_name"
+
+    # ── Activar ──────────────────────────────────────────────────────────
     # shellcheck disable=SC1091
-    source "${VENV_DIR}/bin/activate" || { log_error "No se pudo activar el venv"; return 1; }
-    log_success "Venv activado"
+    source "${VENV_DIR}/bin/activate" \
+        || { log_error "No se pudo activar el venv"; return 1; }
+    log_clean "Venv activado: $(which python)"
 
-    log_step "Descargando requirements de Odoo ${ODOO_VERSION}..."
+    # ── Requirements de Odoo ─────────────────────────────────────────────
+    log_download "Descargando requirements de Odoo ${ODOO_VERSION}..."
+    log_net "URL: ${REQUIREMENTS_URL}"
     curl -fsSL -o "$REQUIREMENTS_FILE" "$REQUIREMENTS_URL" \
         || { log_error "No se pudo descargar requirements"; return 1; }
     log_success "requirements.txt descargado"
 
     update_requirements "$ODOO_VERSION"
 
-    log_step "Instalando dependencias Python..."
+    log_install "Instalando dependencias Python (requirements.txt)..."
     uv pip install --no-cache-dir -r "$REQUIREMENTS_FILE" \
         || { log_error "Falló la instalación de dependencias"; return 1; }
     log_success "Dependencias instaladas"
 
+    log_cleanup "Eliminando requirements.txt temporal..."
     rm -f "$REQUIREMENTS_FILE"
-    log_info "requirements.txt temporal eliminado"
+    log_success "Limpieza completada"
 }
 
 # ----------------------------------------------------------------------------
-# Clonado de Odoo
+# Clonado / actualización de Odoo
 # ----------------------------------------------------------------------------
 download_odoo() {
-    log_step "Clonando Odoo ${ODOO_VERSION}..."
+    log_check "Verificando repositorio de Odoo ${ODOO_VERSION}..."
 
     if [[ -d "$ODOO_DIR" ]]; then
-        log_info "Odoo ya existe en ${ODOO_DIR}, se omite"
+        log_reuse "Directorio existente: ${ODOO_DIR}"
+
+        if [[ ! -d "${ODOO_DIR}/.git" ]]; then
+            log_error "${ODOO_DIR} existe pero no es un repositorio git"
+            log_warn "Borra el directorio manualmente si quieres re-clonar"
+            return 1
+        fi
+
+        local current_branch old_head new_head
+        current_branch="$(git -C "$ODOO_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'desconocida')"
+        old_head="$(git -C "$ODOO_DIR" rev-parse --short HEAD 2>/dev/null || echo '?')"
+
+        log_info "Branch actual   : ${current_branch}"
+        log_info "Branch objetivo : ${ODOO_VERSION}"
+        log_info "HEAD actual     : ${old_head}"
+
+        if [[ -n "$(git -C "$ODOO_DIR" status --porcelain 2>/dev/null)" ]]; then
+            log_warn "Hay cambios locales sin commitear en ${ODOO_DIR}"
+            log_warn "Serán descartados al actualizar"
+        fi
+
+        log_update "Haciendo fetch de origin/${ODOO_VERSION} (shallow)..."
+        if ! git -C "$ODOO_DIR" fetch --depth=1 origin \
+                "${ODOO_VERSION}:refs/remotes/origin/${ODOO_VERSION}"; then
+            log_warn "No se pudo hacer fetch (¿sin red?). Se conserva la copia local."
+            return 0
+        fi
+
+        if [[ "$current_branch" != "$ODOO_VERSION" ]]; then
+            log_update "Cambiando branch: ${current_branch} → ${ODOO_VERSION}"
+            git -C "$ODOO_DIR" checkout -f -B "$ODOO_VERSION" \
+                "origin/${ODOO_VERSION}" \
+                || { log_error "No se pudo cambiar de branch"; return 1; }
+        else
+            log_update "Actualizando ${ODOO_VERSION} a origin/${ODOO_VERSION}..."
+            git -C "$ODOO_DIR" reset --hard "origin/${ODOO_VERSION}" \
+                || { log_error "No se pudo actualizar el repositorio"; return 1; }
+        fi
+
+        new_head="$(git -C "$ODOO_DIR" rev-parse --short HEAD 2>/dev/null || echo '?')"
+        if [[ "$old_head" == "$new_head" ]]; then
+            log_success "Odoo ya estaba actualizado (${new_head})"
+        else
+            log_success "Odoo actualizado: ${old_head} → ${new_head}"
+        fi
         return 0
     fi
 
-    git clone --depth 1 --branch "$ODOO_VERSION" \
-        "https://github.com/odoo/odoo.git" "$ODOO_DIR" \
+    log_download "No existe ${ODOO_DIR} → clonando por primera vez..."
+    log_net "Repo: ${ODOO_REPO} (branch ${ODOO_VERSION})"
+    git clone --depth 1 --branch "$ODOO_VERSION" "$ODOO_REPO" "$ODOO_DIR" \
         || { log_error "Falló git clone de Odoo"; return 1; }
-
     log_success "Odoo clonado en ${ODOO_DIR}"
 }
 
@@ -168,20 +306,19 @@ detect_ocli_arch() {
 }
 
 # ----------------------------------------------------------------------------
-# FASE 1 — Descarga al workspace, con verificación de versión
+# FASE 1 — Descarga de ocli al workspace (idempotente)
 # ----------------------------------------------------------------------------
 download_ocli_to_workspace() {
-    log_step "Verificando ocli en el workspace..."
-    log_info "Ruta del workspace: ${OCLI_WORKSPACE}"
+    log_check "Verificando ocli en el workspace..."
+    log_target "Ruta del workspace: ${OCLI_WORKSPACE}"
 
     local latest ws_ver
+    log_version "Consultando última versión en GitHub..."
     latest="$(get_latest_ocli_version 2>/dev/null || true)"
 
-    # ── Caso A: el binario ya existe en el workspace ─────────────────────
     if [[ -f "$OCLI_WORKSPACE" ]]; then
-        log_info "Encontrado: ${OCLI_WORKSPACE}"
+        log_reuse "Encontrado: ${OCLI_WORKSPACE}"
 
-        # Asegurar permiso de ejecución (por si vino sin +x)
         if [[ ! -x "$OCLI_WORKSPACE" ]]; then
             log_warn "El binario no era ejecutable, corrigiendo permisos..."
             chmod +x "$OCLI_WORKSPACE"
@@ -191,28 +328,23 @@ download_ocli_to_workspace() {
         log_info "Versión en workspace : ${ws_ver:-desconocida}"
         log_info "Última versión GitHub: ${latest:-no disponible}"
 
-        # ¿Misma versión? → no se descarga nada
         if [[ -n "$latest" && -n "$ws_ver" ]] && \
            [[ "$(normalize_version "$latest")" == "$(normalize_version "$ws_ver")" ]]; then
             log_success "Versiones coinciden → no se descarga nada"
             return 0
         fi
 
-        # Sin red pero hay copia local → fail-soft
         if [[ -z "$latest" ]]; then
             log_warn "No se pudo verificar la última versión (sin red / rate-limit)."
             log_warn "Se mantiene la copia local: ${ws_ver:-desconocida}"
             return 0
         fi
 
-        log_info "Versiones distintas → se descargará la nueva versión"
-
-    # ── Caso B: no existe → descarga normal ──────────────────────────────
+        log_update "Versiones distintas → se descargará la nueva versión"
     else
-        log_info "No existe ${OCLI_WORKSPACE} → se descargará ${latest:-la última versión}"
+        log_download "No existe ${OCLI_WORKSPACE} → se descargará ${latest:-la última versión}"
     fi
 
-    # ── Descarga ──────────────────────────────────────────────────────────
     local os arch url tmp
     os="$(detect_ocli_os)"     || return 1
     arch="$(detect_ocli_arch)" || return 1
@@ -220,15 +352,15 @@ download_ocli_to_workspace() {
     tmp="${OCLI_WORKSPACE}.tmp.$$"
 
     log_info "Plataforma detectada: ${os}/${arch}"
-    log_info "URL: ${url}"
+    log_net "URL: ${url}"
 
+    log_download "Descargando binario..."
     if ! curl -fsSL -o "$tmp" "$url"; then
         log_error "No se pudo descargar ocli desde ${url}"
         rm -f "$tmp"
         return 1
     fi
 
-    # Sanity check: un binario real pesa > 1 KB
     local size
     size="$(stat -c%s "$tmp" 2>/dev/null || stat -f%z "$tmp" 2>/dev/null || echo 0)"
     if (( size < 1024 )); then
@@ -246,7 +378,7 @@ download_ocli_to_workspace() {
 # FASE 2 — Instalación desde el workspace (idempotente)
 # ----------------------------------------------------------------------------
 install_ocli_from_workspace() {
-    log_step "Instalando ocli desde el workspace..."
+    log_install "Instalando ocli desde el workspace..."
 
     if [[ ! -x "$OCLI_WORKSPACE" ]]; then
         log_error "No hay binario ejecutable en ${OCLI_WORKSPACE}"
@@ -280,7 +412,7 @@ install_ocli_from_workspace() {
 }
 
 # ----------------------------------------------------------------------------
-# Orquestador
+# Orquestador ocli
 # ----------------------------------------------------------------------------
 download_ocli() {
     download_ocli_to_workspace  || return 1
@@ -291,10 +423,15 @@ download_ocli() {
 # Main
 # ----------------------------------------------------------------------------
 main() {
-    log_info "Iniciando setup de Odoo ${ODOO_VERSION} + ocli..."
+    log_start "Iniciando setup de Odoo ${ODOO_VERSION} + ocli..."
 
-    setup_venv    || exit 1
+    log_launch "Paso 1/3 — Entorno virtual"
+    setup_venv || exit 1
+
+    log_launch "Paso 2/3 — Repositorio de Odoo"
     download_odoo || exit 1
+
+    log_launch "Paso 3/3 — Herramienta ocli"
     download_ocli || exit 1
 
     log_finish "Entorno listo. Odoo ${ODOO_VERSION} y ocli disponibles."
