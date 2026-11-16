@@ -47,8 +47,10 @@ services:
 volumes:
   odoo-data:
     external: true
+  zsh-history:
+    external: true
 
 networks:
-  shared-net:
+  proxy-net:
     external: true
-    name: shared-net
+    name: proxy-net
