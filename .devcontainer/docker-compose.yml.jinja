@@ -1,18 +1,48 @@
+name: {{project_name}}
+
 services:
   odoo:
-    container_name: {{ project_name }}
-    image: ghcr.io/mjavint/odoodev:{{ python_version }}-slim-bookworm
+    image: ghcr.io/mjavint/odoodev:{{python_version}}-slim-bookworm
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    # GID dueño de /var/run/docker.sock en el host.
+    # Docker Desktop (macOS/Windows): 0.
+    # Linux: DOCKER_GID=$(getent group docker | cut -d: -f3)
+    group_add:
+      - "${DOCKER_GID:-0}"
+    environment:
+      SHELL: /usr/bin/zsh
+      HISTFILE: /commandhistory/.zsh_history
+      DOCKER_HOST: unix:///var/run/docker.sock
     volumes:
       - ..:/workspace
       - $ODOO_SERVER:/workspace/odoo
       - odoo-data:/var/lib/odoo
+      # Socket del daemon de Docker del host (el CLI vive en la imagen)
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Configuración de Zsh del host
+      - ~/.zshrc:/home/odoo/.zshrc:cached
+      - ~/.oh-my-zsh:/home/odoo/.oh-my-zsh:cached
+      # Configuración de SSH del host
+      - ~/.ssh:/home/odoo/.ssh:cached
+      # Configuración de opencode
+      - ~/.config/opencode:/home/odoo/.config/opencode:cached
+      # Historial de Zsh persistente entre reconstrucciones
+      - zsh-history:/commandhistory
     command: sleep infinity
     ports:
       - "8069:8069"
       - "8071:8071"
       - "8072:8072"
     networks:
-      - shared-net
+      - proxy-net
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.odoo.rule=Host(`odoo19.test`)"
+      - "traefik.http.routers.odoo.entrypoints=web"
+      # Traefik enruta al puerto 3000 DENTRO del contenedor
+      - "traefik.http.services.odoo.loadbalancer.server.port=8069"
 
 volumes:
   odoo-data:

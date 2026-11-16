@@ -2,29 +2,9 @@
   "name": "{{ project_name }}",
   "dockerComposeFile": "docker-compose.yml",
   "service": "odoo",
-  "workspaceFolder": "/workspace",
   "remoteUser": "odoo",
-  "postCreateCommand": "./install.sh"
-  "features": {
-    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}
-  },
-  "mounts": [
-    {
-      "source": "zshhistory",
-      "target": "/commandhistory",
-      "type": "volume"
-    },
-    {
-      "source": "${localEnv:HOME}/.ssh",
-      "target": "/home/odoo/.ssh",
-      "type": "bind"
-    },
-    {
-      "source": "${localEnv:HOME}/.config/opencode",
-      "target": "/home/odoo/.config/opencode",
-      "type": "bind"
-    }
-  ],
+  "workspaceFolder": "/workspace",
+  "postCreateCommand": "./install.sh",
   "customizations": {
     "vscode": {
       "extensions": [
@@ -42,7 +22,8 @@
         "formulahendry.auto-complete-tag",
         "mrorz.language-gettext",
         "ArthurLobo.easy-codesnap",
-        "mvintg.pg-manager"
+        "mvintg.pg-manager",
+        "ms-azuretools.vscode-containers"
       ],
       "settings": {
         "python.languageServer": "None",
@@ -52,7 +33,7 @@
         "terminal.integrated.fontFamily": "MesloLGS NF",
         "terminal.integrated.fontLigatures.enabled": true,
         "terminal.integrated.defaultProfile.linux": "zsh",
-        "python.defaultInterpreterPath": "/workspace/.venv/bin/python",
+        "python.defaultInterpreterPath": ".venv/bin/python",
         "python.terminal.activateEnvInCurrentTerminal": true,
         "python.linting.pylintEnabled": true,
         "[python]": {

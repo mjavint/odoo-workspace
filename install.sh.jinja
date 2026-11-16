@@ -1,96 +1,195 @@
 #!/bin/bash
 set -euo pipefail
 
-# Constants
+# ============================================================================
+# 🚀 Odoo + ocli Environment Setup (Jinja2 template)
+# ----------------------------------------------------------------------------
+# Único valor dinámico: {{ odoo_version }}
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# Constantes
+# ----------------------------------------------------------------------------
 readonly ODOO_VERSION="{{ odoo_version }}"
-readonly REQUIREMENTS_URL="https://raw.githubusercontent.com/odoo/odoo/$ODOO_VERSION/requirements.txt"
+readonly REQUIREMENTS_URL="https://raw.githubusercontent.com/odoo/odoo/${ODOO_VERSION}/requirements.txt"
 readonly REQUIREMENTS_FILE="requirements.txt"
 readonly VENV_DIR=".venv"
 readonly ODOO_DIR="odoo"
-readonly USER="$(whoami)"
 
-# Logging functions
-log_info() { echo "ℹ️  $*"; }
+readonly OCLI_BASE_URL="https://github.com/mjavint/ocli/releases/latest/download"
+readonly OCLI_INSTALL_DIR="${HOME}/.local/bin"
+readonly OCLI_BIN="${OCLI_INSTALL_DIR}/ocli"
+
+readonly CURRENT_USER="$(whoami)"
+
+# ----------------------------------------------------------------------------
+# Logging con emojis
+# ----------------------------------------------------------------------------
+log_info()    { echo "ℹ️  $*"; }
 log_success() { echo "✅ $*"; }
-log_error() { echo "❌ $*" >&2; }
+log_warn()    { echo "⚠️  $*"; }
+log_error()   { echo "❌ $*" >&2; }
+log_step()    { echo "▶️  $*"; }
+log_finish()  { echo "🎉 $*"; }
 
-# Update gevent/greenlet versions in requirements
+# Trap de errores
+trap 'log_error "Fallo en la línea ${LINENO}"; exit 1' ERR
+
+# ----------------------------------------------------------------------------
+# Ajuste de requirements (compatibilidad Odoo 16/17/18)
+# ----------------------------------------------------------------------------
 update_requirements() {
     local version="$1"
     case "$version" in
         16.0|17.0|18.0)
-            log_info "Updating gevent and greenlet versions for Odoo $version..."
+            log_step "Ajustando gevent/greenlet/cbor2 para Odoo ${version}..."
             sed -i.bak -E \
                 -e "s/(gevent==)21\.8\.0/\122.10.2/" \
                 -e "s/(greenlet==)1\.1\.2/\12.0.2/" \
                 -e "s/(cbor2==)5\.4\.2\.post1/\15.6.5/" \
                 "$REQUIREMENTS_FILE" && rm -f "${REQUIREMENTS_FILE}.bak"
+            log_success "Requirements ajustado para Odoo ${version}"
             ;;
-        19.0)
-            log_info "Using official requirements for Odoo $version..."
-            curl -fsSL -o "$REQUIREMENTS_FILE" "$REQUIREMENTS_URL" || { log_error "Failed to download requirements"; return 1; }
+        19.0|*)
+            log_info "Usando requirements oficiales de Odoo ${version}"
             ;;
     esac
 }
 
-# Setup virtual environment
+# ----------------------------------------------------------------------------
+# Entorno virtual con uv
+# ----------------------------------------------------------------------------
 setup_venv() {
-    if [ -d "$VENV_DIR" ]; then
-        log_info "Virtual environment already exists"
+    log_step "Configurando entorno virtual..."
+
+    if [[ -d "$VENV_DIR" ]]; then
+        log_info "El venv ya existe en ${VENV_DIR}, se reutiliza"
         return 0
     fi
 
-    log_info "Creating virtual environment..."
-    uv sync || { log_error "Failed to create venv"; return 1; }
-    log_success "Virtual environment created"
+    log_info "Creando venv en ${VENV_DIR}..."
+    uv venv "$VENV_DIR" || { log_error "No se pudo crear el venv"; return 1; }
+    log_success "Venv creado"
 
     # shellcheck disable=SC1091
-    source "$VENV_DIR/bin/activate" || { log_error "Failed to activate venv"; return 1; }
-    log_success "Virtual environment activated"
+    source "${VENV_DIR}/bin/activate" || { log_error "No se pudo activar el venv"; return 1; }
+    log_success "Venv activado"
 
-    log_info "Downloading requirements..."
-    curl -fsSL -o "$REQUIREMENTS_FILE" "$REQUIREMENTS_URL" || { log_error "Failed to download requirements"; return 1; }
+    log_step "Descargando requirements de Odoo ${ODOO_VERSION}..."
+    curl -fsSL -o "$REQUIREMENTS_FILE" "$REQUIREMENTS_URL" \
+        || { log_error "No se pudo descargar requirements"; return 1; }
+    log_success "requirements.txt descargado"
 
     update_requirements "$ODOO_VERSION"
 
-    log_info "Installing Python dependencies..."
-    uv pip install --no-cache-dir -r "$REQUIREMENTS_FILE" || { log_error "Failed to install dependencies"; return 1; }
+    log_step "Instalando dependencias Python..."
+    uv pip install --no-cache-dir -r "$REQUIREMENTS_FILE" \
+        || { log_error "Falló la instalación de dependencias"; return 1; }
+    log_success "Dependencias instaladas"
 
-    log_success "All dependencies installed"
     rm -f "$REQUIREMENTS_FILE"
-    log_info "Cleaned up temporary requirements file"
+    log_info "requirements.txt temporal eliminado"
 }
 
-# Download Odoo server
+# ----------------------------------------------------------------------------
+# Clonado de Odoo
+# ----------------------------------------------------------------------------
 download_odoo() {
-    if [ -d "$ODOO_DIR" ]; then
-        log_info "Odoo server already exists, skipping download"
+    log_step "Clonando Odoo ${ODOO_VERSION}..."
+
+    if [[ -d "$ODOO_DIR" ]]; then
+        log_info "Odoo ya existe en ${ODOO_DIR}, se omite"
         return 0
     fi
 
-    log_info "Downloading Odoo server from GitHub..."
-    git clone --depth 1 --branch "$ODOO_VERSION" "https://github.com/odoo/odoo.git" "$ODOO_DIR" \
-        || { log_error "Failed to clone Odoo repository"; return 1; }
+    git clone --depth 1 --branch "$ODOO_VERSION" \
+        "https://github.com/odoo/odoo.git" "$ODOO_DIR" \
+        || { log_error "Falló git clone de Odoo"; return 1; }
 
-    log_success "Odoo server downloaded"
+    log_success "Odoo clonado en ${ODOO_DIR}"
 }
 
-set_permissions() {
-    log_info "Setting permissions for .ssh directory..."
-    sudo chown -R "$USER":"$USER" ~/.ssh
-    sudo chmod -R 775 ~/.ssh
-    log_success "Permissions set for .ssh directory"
-
+# ----------------------------------------------------------------------------
+# Detección de plataforma para ocli
+# ----------------------------------------------------------------------------
+detect_ocli_os() {
+    local os
+    os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    case "$os" in
+        linux)  echo "linux" ;;
+        darwin) echo "darwin" ;;
+        *)      log_error "OS no soportado por ocli: ${os}"; return 1 ;;
+    esac
 }
 
-# Main execution
+detect_ocli_arch() {
+    local arch
+    arch="$(uname -m)"
+    case "$arch" in
+        x86_64|amd64)  echo "amd64" ;;
+        aarch64|arm64) echo "arm64" ;;
+        *)             log_error "Arquitectura no soportada por ocli: ${arch}"; return 1 ;;
+    esac
+}
+
+# ----------------------------------------------------------------------------
+# Descarga e instalación de ocli (última release)
+# ----------------------------------------------------------------------------
+download_ocli() {
+    log_step "Descargando ocli (última release)..."
+
+    local os arch url tmp
+    os="$(detect_ocli_os)"   || return 1
+    arch="$(detect_ocli_arch)" || return 1
+
+    url="${OCLI_BASE_URL}/ocli-${os}-${arch}"
+    tmp="$(mktemp)"
+
+    log_info "Plataforma detectada: ${os}/${arch}"
+    log_info "URL: ${url}"
+
+    if ! curl -fsSL -o "$tmp" "$url"; then
+        log_error "No se pudo descargar ocli desde ${url}"
+        rm -f "$tmp"
+        return 1
+    fi
+
+    # Sanity check: un binario real pesa > 1KB
+    local size
+    size="$(stat -c%s "$tmp" 2>/dev/null || stat -f%z "$tmp" 2>/dev/null || echo 0)"
+    if (( size < 1024 )); then
+        log_error "El archivo descargado parece inválido (${size} bytes)"
+        rm -f "$tmp"
+        return 1
+    fi
+
+    mkdir -p "$OCLI_INSTALL_DIR"
+    mv "$tmp" "$OCLI_BIN"
+    chmod +x "$OCLI_BIN"
+    log_success "ocli instalado en ${OCLI_BIN}"
+
+    if command -v ocli &>/dev/null; then
+        local ver
+        ver="$(ocli --version 2>/dev/null || ocli version 2>/dev/null || echo 'desconocida')"
+        log_info "Versión de ocli: ${ver}"
+    else
+        log_warn "~/.local/bin no está en PATH."
+        log_warn "Añade esto a tu ~/.bashrc o ~/.zshrc:"
+        echo '   export PATH="$HOME/.local/bin:$PATH"'
+    fi
+}
+
+# ----------------------------------------------------------------------------
+# Main
+# ----------------------------------------------------------------------------
 main() {
-    log_info "Starting Odoo dependencies setup with uv..."
+    log_info "Iniciando setup de Odoo ${ODOO_VERSION} + ocli..."
 
-    setup_venv || exit 1
+    setup_venv    || exit 1
     download_odoo || exit 1
+    download_ocli || exit 1
 
-    log_success "Environment ready! 🎉"
+    log_finish "Entorno listo. Odoo ${ODOO_VERSION} y ocli disponibles."
 }
 
 main "$@"
