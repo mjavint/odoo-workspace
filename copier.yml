@@ -32,6 +32,18 @@ python_version:
     - "3.10"
     - "3.8"
 
+# Host Postgres Database
+db_host:
+  type: str
+  help: Host Postgres Database
+  default: "localhost"
+
+# Host Postgres Database
+db_port:
+  type: str
+  help: Port Postgres Database
+  default: "5432"
+
 # Exclusions
 _exclude:
   - "copier.yml"
