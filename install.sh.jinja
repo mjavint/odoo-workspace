@@ -16,7 +16,9 @@ readonly REQUIREMENTS_FILE="requirements.txt"
 readonly VENV_DIR=".venv"
 readonly ODOO_DIR="odoo"
 
-readonly OCLI_BASE_URL="https://github.com/mjavint/ocli/releases/latest/download"
+readonly OCLI_REPO="mjavint/ocli"
+readonly OCLI_LATEST_URL="https://github.com/${OCLI_REPO}/releases/latest"
+readonly OCLI_ASSET_BASE="https://github.com/${OCLI_REPO}/releases/latest/download"
 readonly OCLI_INSTALL_DIR="${HOME}/.local/bin"
 readonly OCLI_BIN="${OCLI_INSTALL_DIR}/ocli"
 
@@ -32,8 +34,37 @@ log_error()   { echo "❌ $*" >&2; }
 log_step()    { echo "▶️  $*"; }
 log_finish()  { echo "🎉 $*"; }
 
-# Trap de errores
 trap 'log_error "Fallo en la línea ${LINENO}"; exit 1' ERR
+
+# ----------------------------------------------------------------------------
+# Helpers de versión
+# ----------------------------------------------------------------------------
+normalize_version() {
+    # Quita prefijo 'v' y sufijos de pre-release para comparar de forma robusta
+    local v="${1#v}"
+    echo "${v%%-*}"
+}
+
+get_latest_ocli_version() {
+    # Sigue el redirect de /releases/latest → /releases/tag/<tag>
+    local location
+    location="$(curl -fsSI -o /dev/null -w '%{redirect_url}' \
+        "$OCLI_LATEST_URL" 2>/dev/null || true)"
+    if [[ -z "$location" ]]; then
+        return 1
+    fi
+    echo "$location" | sed -nE 's#.*/tag/([^/]+)/?$#\1#p'
+}
+
+get_local_ocli_version() {
+    [[ -x "$OCLI_BIN" ]] || return 1
+    local out
+    out="$("$OCLI_BIN" --version 2>/dev/null \
+        || "$OCLI_BIN" version 2>/dev/null \
+        || true)"
+    [[ -n "$out" ]] || return 1
+    echo "$out" | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?' | head -n1
+}
 
 # ----------------------------------------------------------------------------
 # Ajuste de requirements (compatibilidad Odoo 16/17/18)
@@ -133,16 +164,41 @@ detect_ocli_arch() {
 }
 
 # ----------------------------------------------------------------------------
-# Descarga e instalación de ocli (última release)
+# Descarga idempotente de ocli
 # ----------------------------------------------------------------------------
 download_ocli() {
-    log_step "Descargando ocli (última release)..."
+    log_step "Verificando ocli..."
 
+    local latest local_ver
+    latest="$(get_latest_ocli_version 2>/dev/null || true)"
+    local_ver="$(get_local_ocli_version 2>/dev/null || true)"
+
+    # --- Caso 1: ya instalado y coincide con la última versión → skip ----
+    if [[ -n "$latest" && -n "$local_ver" ]] && \
+       [[ "$(normalize_version "$latest")" == "$(normalize_version "$local_ver")" ]]; then
+        log_success "ocli ya está en la última versión (${latest}), se omite la descarga"
+        return 0
+    fi
+
+    # --- Caso 2: no se pudo consultar GitHub ----------------------------
+    if [[ -z "$latest" ]]; then
+        if [[ -x "$OCLI_BIN" ]]; then
+            log_warn "No se pudo verificar la última versión (sin red o rate-limit)."
+            log_warn "Se mantiene la instalada: ${local_ver:-desconocida}"
+            return 0
+        fi
+        log_warn "No se pudo verificar la última versión; se intentará descargar de todos modos"
+    elif [[ -n "$local_ver" ]]; then
+        log_info "Actualizando ocli: ${local_ver} → ${latest}"
+    else
+        log_info "Instalando ocli ${latest}"
+    fi
+
+    # --- Descarga --------------------------------------------------------
     local os arch url tmp
-    os="$(detect_ocli_os)"   || return 1
+    os="$(detect_ocli_os)"     || return 1
     arch="$(detect_ocli_arch)" || return 1
-
-    url="${OCLI_BASE_URL}/ocli-${os}-${arch}"
+    url="${OCLI_ASSET_BASE}/ocli-${os}-${arch}"
     tmp="$(mktemp)"
 
     log_info "Plataforma detectada: ${os}/${arch}"
@@ -154,7 +210,7 @@ download_ocli() {
         return 1
     fi
 
-    # Sanity check: un binario real pesa > 1KB
+    # Sanity check: un binario real pesa > 1 KB
     local size
     size="$(stat -c%s "$tmp" 2>/dev/null || stat -f%z "$tmp" 2>/dev/null || echo 0)"
     if (( size < 1024 )); then
@@ -171,7 +227,7 @@ download_ocli() {
     if command -v ocli &>/dev/null; then
         local ver
         ver="$(ocli --version 2>/dev/null || ocli version 2>/dev/null || echo 'desconocida')"
-        log_info "Versión de ocli: ${ver}"
+        log_info "Versión de ocli en PATH: ${ver}"
     else
         log_warn "~/.local/bin no está en PATH."
         log_warn "Añade esto a tu ~/.bashrc o ~/.zshrc:"
