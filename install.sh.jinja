@@ -8,7 +8,7 @@ set -euo pipefail
 # ============================================================================
 
 # ----------------------------------------------------------------------------
-# Constantes
+# Rutas
 # ----------------------------------------------------------------------------
 readonly ODOO_VERSION="{{ odoo_version }}"
 readonly REQUIREMENTS_URL="https://raw.githubusercontent.com/odoo/odoo/${ODOO_VERSION}/requirements.txt"
@@ -16,11 +16,19 @@ readonly REQUIREMENTS_FILE="requirements.txt"
 readonly VENV_DIR=".venv"
 readonly ODOO_DIR="odoo"
 
+# Workspace: /workspace si existe, si no el cwd actual
+if [[ -d "/workspace" ]]; then
+    readonly WORKSPACE_DIR="/workspace"
+else
+    readonly WORKSPACE_DIR="$(pwd)"
+fi
+readonly OCLI_WORKSPACE="${WORKSPACE_DIR}/ocli"   # binario canónico
+readonly OCLI_INSTALL_DIR="${HOME}/.local/bin"     # destino de instalación
+readonly OCLI_BIN="${OCLI_INSTALL_DIR}/ocli"
+
 readonly OCLI_REPO="mjavint/ocli"
 readonly OCLI_LATEST_URL="https://github.com/${OCLI_REPO}/releases/latest"
 readonly OCLI_ASSET_BASE="https://github.com/${OCLI_REPO}/releases/latest/download"
-readonly OCLI_INSTALL_DIR="${HOME}/.local/bin"
-readonly OCLI_BIN="${OCLI_INSTALL_DIR}/ocli"
 
 readonly CURRENT_USER="$(whoami)"
 
@@ -40,30 +48,26 @@ trap 'log_error "Fallo en la línea ${LINENO}"; exit 1' ERR
 # Helpers de versión
 # ----------------------------------------------------------------------------
 normalize_version() {
-    # Quita prefijo 'v' y sufijos de pre-release para comparar de forma robusta
     local v="${1#v}"
     echo "${v%%-*}"
 }
 
+get_bin_version() {
+    local bin="$1"
+    [[ -x "$bin" ]] || return 1
+    local out
+    out="$("$bin" --version 2>/dev/null || "$bin" version 2>/dev/null || true)"
+    [[ -n "$out" ]] || return 1
+    echo "$out" | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?' | head -n1
+}
+
 get_latest_ocli_version() {
-    # Sigue el redirect de /releases/latest → /releases/tag/<tag>
+    # Sigue el redirect /releases/latest → /releases/tag/<tag>
     local location
     location="$(curl -fsSI -o /dev/null -w '%{redirect_url}' \
         "$OCLI_LATEST_URL" 2>/dev/null || true)"
-    if [[ -z "$location" ]]; then
-        return 1
-    fi
+    [[ -n "$location" ]] || return 1
     echo "$location" | sed -nE 's#.*/tag/([^/]+)/?$#\1#p'
-}
-
-get_local_ocli_version() {
-    [[ -x "$OCLI_BIN" ]] || return 1
-    local out
-    out="$("$OCLI_BIN" --version 2>/dev/null \
-        || "$OCLI_BIN" version 2>/dev/null \
-        || true)"
-    [[ -n "$out" ]] || return 1
-    echo "$out" | grep -oE 'v?[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?' | head -n1
 }
 
 # ----------------------------------------------------------------------------
@@ -141,7 +145,7 @@ download_odoo() {
 }
 
 # ----------------------------------------------------------------------------
-# Detección de plataforma para ocli
+# Detección de plataforma
 # ----------------------------------------------------------------------------
 detect_ocli_os() {
     local os
@@ -164,42 +168,56 @@ detect_ocli_arch() {
 }
 
 # ----------------------------------------------------------------------------
-# Descarga idempotente de ocli
+# FASE 1 — Descarga al workspace, con verificación de versión
 # ----------------------------------------------------------------------------
-download_ocli() {
-    log_step "Verificando ocli..."
+download_ocli_to_workspace() {
+    log_step "Verificando ocli en el workspace..."
+    log_info "Ruta del workspace: ${OCLI_WORKSPACE}"
 
-    local latest local_ver
+    local latest ws_ver
     latest="$(get_latest_ocli_version 2>/dev/null || true)"
-    local_ver="$(get_local_ocli_version 2>/dev/null || true)"
 
-    # --- Caso 1: ya instalado y coincide con la última versión → skip ----
-    if [[ -n "$latest" && -n "$local_ver" ]] && \
-       [[ "$(normalize_version "$latest")" == "$(normalize_version "$local_ver")" ]]; then
-        log_success "ocli ya está en la última versión (${latest}), se omite la descarga"
-        return 0
-    fi
+    # ── Caso A: el binario ya existe en el workspace ─────────────────────
+    if [[ -f "$OCLI_WORKSPACE" ]]; then
+        log_info "Encontrado: ${OCLI_WORKSPACE}"
 
-    # --- Caso 2: no se pudo consultar GitHub ----------------------------
-    if [[ -z "$latest" ]]; then
-        if [[ -x "$OCLI_BIN" ]]; then
-            log_warn "No se pudo verificar la última versión (sin red o rate-limit)."
-            log_warn "Se mantiene la instalada: ${local_ver:-desconocida}"
+        # Asegurar permiso de ejecución (por si vino sin +x)
+        if [[ ! -x "$OCLI_WORKSPACE" ]]; then
+            log_warn "El binario no era ejecutable, corrigiendo permisos..."
+            chmod +x "$OCLI_WORKSPACE"
+        fi
+
+        ws_ver="$(get_bin_version "$OCLI_WORKSPACE" 2>/dev/null || true)"
+        log_info "Versión en workspace : ${ws_ver:-desconocida}"
+        log_info "Última versión GitHub: ${latest:-no disponible}"
+
+        # ¿Misma versión? → no se descarga nada
+        if [[ -n "$latest" && -n "$ws_ver" ]] && \
+           [[ "$(normalize_version "$latest")" == "$(normalize_version "$ws_ver")" ]]; then
+            log_success "Versiones coinciden → no se descarga nada"
             return 0
         fi
-        log_warn "No se pudo verificar la última versión; se intentará descargar de todos modos"
-    elif [[ -n "$local_ver" ]]; then
-        log_info "Actualizando ocli: ${local_ver} → ${latest}"
+
+        # Sin red pero hay copia local → fail-soft
+        if [[ -z "$latest" ]]; then
+            log_warn "No se pudo verificar la última versión (sin red / rate-limit)."
+            log_warn "Se mantiene la copia local: ${ws_ver:-desconocida}"
+            return 0
+        fi
+
+        log_info "Versiones distintas → se descargará la nueva versión"
+
+    # ── Caso B: no existe → descarga normal ──────────────────────────────
     else
-        log_info "Instalando ocli ${latest}"
+        log_info "No existe ${OCLI_WORKSPACE} → se descargará ${latest:-la última versión}"
     fi
 
-    # --- Descarga --------------------------------------------------------
+    # ── Descarga ──────────────────────────────────────────────────────────
     local os arch url tmp
     os="$(detect_ocli_os)"     || return 1
     arch="$(detect_ocli_arch)" || return 1
     url="${OCLI_ASSET_BASE}/ocli-${os}-${arch}"
-    tmp="$(mktemp)"
+    tmp="${OCLI_WORKSPACE}.tmp.$$"
 
     log_info "Plataforma detectada: ${os}/${arch}"
     log_info "URL: ${url}"
@@ -214,25 +232,59 @@ download_ocli() {
     local size
     size="$(stat -c%s "$tmp" 2>/dev/null || stat -f%z "$tmp" 2>/dev/null || echo 0)"
     if (( size < 1024 )); then
-        log_error "El archivo descargado parece inválido (${size} bytes)"
+        log_error "Archivo descargado inválido (${size} bytes)"
         rm -f "$tmp"
         return 1
     fi
 
+    chmod +x "$tmp"
+    mv -f "$tmp" "$OCLI_WORKSPACE"
+    log_success "ocli actualizado en ${OCLI_WORKSPACE}"
+}
+
+# ----------------------------------------------------------------------------
+# FASE 2 — Instalación desde el workspace (idempotente)
+# ----------------------------------------------------------------------------
+install_ocli_from_workspace() {
+    log_step "Instalando ocli desde el workspace..."
+
+    if [[ ! -x "$OCLI_WORKSPACE" ]]; then
+        log_error "No hay binario ejecutable en ${OCLI_WORKSPACE}"
+        return 1
+    fi
+
+    local ws_ver local_ver
+    ws_ver="$(get_bin_version "$OCLI_WORKSPACE" 2>/dev/null || true)"
+    local_ver="$(get_bin_version "$OCLI_BIN"       2>/dev/null || true)"
+
+    log_info "Versión en workspace: ${ws_ver:-desconocida}"
+    log_info "Versión instalada  : ${local_ver:-no instalada}"
+
+    if [[ -n "$ws_ver" && -n "$local_ver" ]] && \
+       [[ "$(normalize_version "$ws_ver")" == "$(normalize_version "$local_ver")" ]]; then
+        log_success "Versión ya instalada coincide con la del workspace → no se reinstala"
+        return 0
+    fi
+
     mkdir -p "$OCLI_INSTALL_DIR"
-    mv "$tmp" "$OCLI_BIN"
-    chmod +x "$OCLI_BIN"
+    install -m 755 "$OCLI_WORKSPACE" "$OCLI_BIN"
     log_success "ocli instalado en ${OCLI_BIN}"
 
     if command -v ocli &>/dev/null; then
-        local ver
-        ver="$(ocli --version 2>/dev/null || ocli version 2>/dev/null || echo 'desconocida')"
-        log_info "Versión de ocli en PATH: ${ver}"
+        log_info "Versión en PATH: $(ocli --version 2>/dev/null || ocli version 2>/dev/null || echo '?')"
     else
-        log_warn "~/.local/bin no está en PATH."
+        log_warn "~/.local/bin no está en PATH"
         log_warn "Añade esto a tu ~/.bashrc o ~/.zshrc:"
         echo '   export PATH="$HOME/.local/bin:$PATH"'
     fi
+}
+
+# ----------------------------------------------------------------------------
+# Orquestador
+# ----------------------------------------------------------------------------
+download_ocli() {
+    download_ocli_to_workspace  || return 1
+    install_ocli_from_workspace || return 1
 }
 
 # ----------------------------------------------------------------------------
